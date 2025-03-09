@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Union
 from pydantic import BaseModel, Field
 from pathlib import Path
 import traceback
+from uuid import uuid4
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -113,20 +114,27 @@ def generate_id(prefix: str = "") -> str:
     return f"{prefix}_{timestamp}_{random_suffix}"
 
 async def persist_data(data: Union[BaseModel, List[BaseModel]], file_path: Path, append: bool = True) -> None:
-    """Persist data to file"""
+    """
+    Persist data to a file
+    
+    Args:
+        data: Data to persist (Pydantic model or list of models)
+        file_path: Path to the file
+        append: Whether to append to the file (default: True)
+    """
+    # Ensure parent directory exists
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    
     mode = "a" if append and file_path.exists() else "w"
     
     try:
-        # Fix: Don't use async with for asyncio.to_thread
-        file = open(file_path, mode)
-        try:
+        # Use synchronous file operations
+        with open(file_path, mode) as f:
             if isinstance(data, list):
                 for item in data:
-                    file.write(f"{item.json()}\n")
+                    f.write(f"{item.json()}\n")
             else:
-                file.write(f"{data.json()}\n")
-        finally:
-            file.close()
+                f.write(f"{data.json()}\n")
     except Exception as e:
         logger.error(f"Failed to persist data to {file_path}: {e}")
 
@@ -269,33 +277,32 @@ async def start_workflow_execution(
     
     Args:
         session_id: Session identifier
-        original_query: Original user query
-        workflow_id: Optional workflow ID (generated if not provided)
+        original_query: Original user query that triggered the workflow
+        workflow_id: Optional workflow identifier (generated if not provided)
         
     Returns:
-        Created WorkflowExecution
+        New WorkflowExecution record
     """
-    if not workflow_id:
-        workflow_id = generate_id("wf")
+    # Ensure logs directory exists
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
     
+    # Generate workflow ID if not provided
+    if not workflow_id:
+        workflow_id = f"wf_{int(datetime.now().timestamp())}_{uuid4().hex[:8]}"
+    
+    # Create workflow execution record
+    start_time = get_timestamp()
     execution = WorkflowExecution(
         workflow_id=workflow_id,
         session_id=session_id,
-        start_time=get_timestamp(),
+        start_time=start_time,
         status="running",
         original_query=original_query
     )
     
-    # Store in memory
-    active_workflows[workflow_id] = execution
-    
-    # Log event
-    await log_event(
-        event_type="workflow_start",
-        message=f"Started workflow execution for query: {original_query}",
-        workflow_id=workflow_id,
-        session_id=session_id
-    )
+    # Persist to file
+    workflow_file = LOGS_DIR / "workflows.jsonl"
+    await persist_data(execution, workflow_file)
     
     return execution
 
@@ -306,53 +313,74 @@ async def end_workflow_execution(
     result_summary: Optional[Dict[str, Any]] = None
 ) -> Optional[WorkflowExecution]:
     """
-    End tracking of a workflow execution
+    End a workflow execution and record final status
     
     Args:
         workflow_id: Workflow identifier
         status: Final status (completed, failed)
-        error: Error message if failed
-        result_summary: Summary of results
+        error: Error message if workflow failed
+        result_summary: Summary of workflow results
         
     Returns:
-        Updated WorkflowExecution or None if not found
+        Updated workflow execution record or None if not found
     """
-    if workflow_id not in active_workflows:
-        await log_event(
-            event_type="workflow_error",
-            message=f"Attempted to end unknown workflow: {workflow_id}",
-            severity="warning",
-            workflow_id=workflow_id
-        )
+    try:
+        # Get the workflow execution record
+        workflow_file = LOGS_DIR / "workflows.jsonl"
+        if not workflow_file.exists():
+            logger.warning(f"[workflow_error] Attempted to end unknown workflow: {workflow_id}")
+            return None
+            
+        # Read existing workflows
+        workflows = []
+        try:
+            with open(workflow_file, "r") as f:
+                for line in f:
+                    try:
+                        workflow = WorkflowExecution.parse_raw(line.strip())
+                        workflows.append(workflow)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(f"[workflow_error] Failed to read workflow records: {e}")
+            
+        # Find the workflow to update
+        workflow_to_update = None
+        for workflow in workflows:
+            if workflow.workflow_id == workflow_id:
+                workflow_to_update = workflow
+                break
+                
+        if not workflow_to_update:
+            logger.warning(f"[workflow_error] Attempted to end unknown workflow: {workflow_id}")
+            return None
+            
+        # Update the workflow
+        end_time = get_timestamp()
+        workflow_to_update.end_time = end_time
+        workflow_to_update.status = status
+        
+        if error:
+            workflow_to_update.error = error
+            
+        if result_summary:
+            workflow_to_update.result_summary = result_summary
+            
+        # Calculate total execution time
+        if workflow_to_update.start_time:
+            start_dt = datetime.fromisoformat(workflow_to_update.start_time)
+            end_dt = datetime.fromisoformat(end_time)
+            workflow_to_update.total_execution_time = (end_dt - start_dt).total_seconds()
+            
+        # Write updated workflows back to file
+        await persist_data(workflows, workflow_file, append=False)
+        
+        logger.info(f"[workflow_end] Workflow {workflow_id} completed in {workflow_to_update.total_execution_time}s")
+        return workflow_to_update
+        
+    except Exception as e:
+        logger.error(f"[workflow_error] Failed to end workflow {workflow_id}: {e}")
         return None
-    
-    execution = active_workflows[workflow_id]
-    end_time = get_timestamp()
-    execution.end_time = end_time
-    execution.status = status
-    execution.error = error
-    execution.result_summary = result_summary
-    
-    # Calculate total execution time
-    start = datetime.fromisoformat(execution.start_time)
-    end = datetime.fromisoformat(end_time)
-    execution.total_execution_time = (end - start).total_seconds()
-    
-    # Log event
-    severity = "info" if status == "completed" else "error"
-    message = f"Workflow {workflow_id} {status} in {execution.total_execution_time:.2f}s"
-    if error:
-        message += f" with error: {error}"
-    
-    await log_event(
-        event_type="workflow_end",
-        message=message,
-        severity=severity,
-        workflow_id=workflow_id,
-        session_id=execution.session_id
-    )
-    
-    return execution
 
 async def report_error(
     error_type: str,
@@ -468,45 +496,42 @@ async def check_system_health() -> SystemHealth:
 # LangGraph node functions
 async def monitor_start(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    LangGraph node function to start monitoring a workflow
+    LangGraph node function to start monitoring a workflow execution
     
     Args:
         state: Current state dictionary
         
     Returns:
-        Updated state with workflow ID
+        Updated state with monitoring information
     """
-    session_id = state.get("session_id", generate_id("session"))
-    query = state.get("natural_language_query", "")
+    # Ensure logs directory exists
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
     
-    if not query:
-        # If no query is provided, generate a generic workflow ID
-        workflow_id = generate_id("wf")
-        return {
-            **state,
-            "workflow_id": workflow_id,
-            "session_id": session_id,
-            "monitoring": {
-                "start_time": get_timestamp(),
-                "status": "running"
-            }
-        }
+    # Extract information from state
+    workflow_id = state.get("workflow_id")
+    session_id = state.get("session_id")
+    query = state.get("query_input", "")
     
-    # Start workflow tracking
+    if not workflow_id:
+        workflow_id = f"wf_{int(datetime.now().timestamp())}_{uuid4().hex[:8]}"
+        state["workflow_id"] = workflow_id
+        
+    if not session_id:
+        session_id = f"session_{int(datetime.now().timestamp())}_{uuid4().hex[:8]}"
+        state["session_id"] = session_id
+    
+    # Start workflow execution tracking
     execution = await start_workflow_execution(
         session_id=session_id,
-        original_query=query
+        original_query=query,
+        workflow_id=workflow_id
     )
     
-    return {
-        **state,
-        "workflow_id": execution.workflow_id,
-        "session_id": session_id,
-        "monitoring": {
-            "start_time": execution.start_time,
-            "status": "running"
-        }
-    }
+    # Log event
+    logger.info(f"[workflow_start] Started workflow execution for query: {query}")
+    
+    # Return updated state
+    return state
 
 async def monitor_agent_execution(state: Dict[str, Any], agent_type: str) -> Dict[str, Any]:
     """
