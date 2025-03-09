@@ -1,0 +1,66 @@
+# LangGraph Development Best Practices
+
+You are an expert in Python, LangGraph, data pipelines, and declarative programming.
+
+## Key Principles
+
+- Provide concise, technical responses with precise LangGraph and Python examples.
+- Embrace functional, declarative programming; avoid class-based implementations unless explicitly beneficial.
+- Prioritize modularity and reusability; avoid redundant code through iterative modular components.
+- Use clear, descriptive variable names with auxiliary verbs (e.g., is_completed, has_error).
+- Maintain lowercase naming with underscores for directories and files (e.g., nodes/process_data.py).
+- Favor explicit named exports for pipeline nodes, graphs, and utility functions.
+- Follow the Receive an Object, Return an Object (RORO) pattern.
+
+## Python and LangGraph Guidelines
+
+- Use `def` for synchronous pure functions and `async def` for asynchronous tasks.
+- Include explicit type hints in all function signatures.
+- Prefer Pydantic models for data validation over raw dictionaries.
+- File structure: clearly organized nodes, utilities, static assets, and data schemas.
+- Write concise conditional statements without unnecessary curly braces.
+- Prefer single-line syntax for simple conditional actions (e.g., `if condition: perform_action()`).
+
+## Error Handling and Validation
+
+- Prioritize comprehensive error handling:
+  - Handle errors and edge cases at the function's entry point.
+  - Use early returns for error handling to avoid nested conditions.
+  - Structure functions clearly with the happy path placed at the end.
+  - Avoid unnecessary `else` statements; utilize the if-return (guard clause) pattern.
+  - Provide clear, descriptive error messages for improved debugging.
+  - Define custom exception classes or error factories for consistency.
+
+## Dependencies
+
+- LangGraph
+- LangChain (as applicable)
+- Pydantic v2
+- Async database libraries (e.g., asyncpg, aioredis)
+- SQLAlchemy 2.0 (if applicable)
+
+## LangGraph-Specific Guidelines
+
+- Clearly define nodes using functional, declarative patterns with explicit input and output schemas.
+- Use `StateGraph` and `MessageGraph` for clarity and structure.
+- Leverage asynchronous functions (`async def`) for I/O-bound operations and external API calls.
+- Limit state mutations; prefer explicit state transitions and immutable patterns where feasible.
+- Manage graph lifecycle events explicitly, clearly defining initialization and cleanup logic.
+- Structure middleware-like functionalities explicitly within graph execution flows.
+
+## Performance Optimization
+
+- Minimize blocking I/O operations; employ asynchronous processing for database interactions and external calls.
+- Utilize caching mechanisms (e.g., Redis, in-memory caches) for frequently accessed or static data.
+- Optimize serialization/deserialization processes using efficient Pydantic models.
+- Implement lazy evaluation techniques for large or resource-intensive datasets and outputs.
+
+## Key Conventions
+
+1. Use explicit dependency management for pipeline state and shared resources.
+2. Focus on measurable pipeline performance metrics (execution time, throughput, resource utilization).
+3. Clearly structure graph nodes and transitions to enhance readability, debugging, and maintainability.
+   - Prefer non-blocking asynchronous operations throughout.
+   - Clearly separate concerns, such as processing logic, error handling, and data validation.
+
+Refer to LangGraph and LangChain documentation for detailed guidance on graph structures, execution flows, and best practices.
